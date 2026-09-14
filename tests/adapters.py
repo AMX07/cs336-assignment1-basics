@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from cs336_basics.gpt import *
 import os
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
@@ -7,7 +7,7 @@ from typing import IO, Any, BinaryIO
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
-from torch import Tensor
+from torch import Tensor, rms_norm
 
 
 def run_linear(
@@ -28,8 +28,14 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
+    linear = Linear(d_in, d_out)
+    state_dict = linear.state_dict()
+    state_dict["weight"] = weights
+    linear.load_state_dict(state_dict)
+    
+    return linear(in_features)
 
-    raise NotImplementedError
+    
 
 
 def run_embedding(
@@ -50,8 +56,13 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
+    embd_table = Embedding(vocab_size,d_model)
+    state_dict = embd_table.state_dict()
+    state_dict["weight"] = weights
+    embd_table.load_state_dict(state_dict)
 
-    raise NotImplementedError
+    return embd_table(token_ids)
+    
 
 
 def run_swiglu(
@@ -80,10 +91,15 @@ def run_swiglu(
     # If your state dict keys match, you can use `load_state_dict()`
     # swiglu.load_state_dict(weights)
     # You can also manually assign the weights
-    # swiglu.w1.weight.data = w1_weight
-    # swiglu.w2.weight.data = w2_weight
-    # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    
+    swiglu = SwiGLU_FFN(d_model,d_ff)
+    # weights = swiglu.state_dict()
+    # state_dict["weight"] = weights
+    # swiglu.load_state_dict(weights)
+    swiglu.w1.weight.data = w1_weight
+    swiglu.w2.weight.data = w2_weight
+    swiglu.w3.weight.data = w3_weight
+    return swiglu(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -378,8 +394,16 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    rms_norm = RMSNorm(d_model,eps)
 
+    state_dict = rms_norm.state_dict()
+    # print(rms_norm.state_dict().keys())
+    state_dict["weight"] = weights
+    rms_norm.load_state_dict(state_dict)
+
+    return rms_norm(in_features)
+
+    
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     """Given a tensor of inputs, return the output of applying SiLU
@@ -590,3 +614,8 @@ def run_train_bpe(
                 Merges are ordered by order of creation.
     """
     raise NotImplementedError
+
+
+# in_features, out_features = 4,5
+
+# run_linear = 
