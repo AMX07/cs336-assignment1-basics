@@ -1,0 +1,30 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.indexing": true,
+  "python.analysis.completeFunctionParens": true,
+  "python.analysis.packageIndexDepths": [
+    {
+      "name": "torch",
+      "depth": 3,
+      "includeAllSymbols": true
+    },
+    {
+      "name": "einops",
+      "depth": 2,
+      "includeAllSymbols": true
+    }
+  ],
+  "editor.hover.enabled": "on",
+  "editor.parameterHints.enabled": true,
+  "editor.suggest.preview": true,
+  "editor.suggest.showFunctions": true,
+  "editor.suggest.showMethods": true,
+  "editor.suggest.showClasses": true,
+  "editor.suggest.showModules": true,
+  "editor.quickSuggestions": {
+    "other": "on",
+    "comments": "off",
+    "strings": "off"
+  }
+}
