@@ -161,3 +161,12 @@ cython_debug/
 
 .ruff_cache/
 *.zip
+
+# Local datasets, machine files, and experiment outputs
+.DS_Store
+/data/
+/wandb/
+/checkpoints/
+/runs/
+# Empty scratch notebook; kept locally
+/cs336_basics/bpe.ipynb

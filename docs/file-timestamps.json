@@ -1,0 +1,72 @@
+{
+  "recorded_at": "2026-09-13T17:04:31.300573-07:00",
+  "note": "Filesystem metadata captured before publication cleanup; not proof of authorship dates or a reconstruction of Git history. Copies, moves, and edits can affect timestamps.",
+  "files": [
+    {
+      "file": "cs336_assignment1_basics.pdf",
+      "size_bytes": 927516,
+      "modified_at": "2026-09-01T14:20:57.790761-07:00",
+      "created_at": "2026-05-30T07:57:44.585106-07:00"
+    },
+    {
+      "file": "cs336_basics/Untitled.ipynb",
+      "size_bytes": 73979054,
+      "modified_at": "2026-06-04T14:08:32.622898-07:00",
+      "created_at": "2026-05-30T12:11:12.589170-07:00"
+    },
+    {
+      "file": "cs336_basics/Untitled1.ipynb",
+      "size_bytes": 127865,
+      "modified_at": "2026-06-18T22:13:03.391286-07:00",
+      "created_at": "2026-06-16T15:51:28.203852-07:00"
+    },
+    {
+      "file": "cs336_basics/Untitled2.ipynb",
+      "size_bytes": 832,
+      "modified_at": "2026-06-18T22:30:06.338472-07:00",
+      "created_at": "2026-06-18T22:28:05.533322-07:00"
+    },
+    {
+      "file": "cs336_basics/bpe.ipynb",
+      "size_bytes": 0,
+      "modified_at": "2026-06-19T13:01:46.415811-07:00",
+      "created_at": "2026-06-19T13:01:46.415811-07:00"
+    },
+    {
+      "file": "cs336_basics/gpt.py",
+      "size_bytes": 2712,
+      "modified_at": "2026-09-13T17:02:35.547588-07:00",
+      "created_at": "2026-06-23T09:41:57.955146-07:00"
+    },
+    {
+      "file": "cs336_basics/makemore_part1_bigrams.ipynb",
+      "size_bytes": 389071,
+      "modified_at": "2026-05-31T12:49:26.042570-07:00",
+      "created_at": "2026-05-31T12:47:20.436830-07:00"
+    },
+    {
+      "file": "cs336_basics/p.py",
+      "size_bytes": 3337,
+      "modified_at": "2026-06-05T15:56:14.362611-07:00",
+      "created_at": "2026-06-05T15:38:14.940695-07:00"
+    },
+    {
+      "file": "cs336_basics/train_bpe.ipynb",
+      "size_bytes": 826706,
+      "modified_at": "2026-06-19T12:48:02.916573-07:00",
+      "created_at": "2026-06-18T22:28:38.460678-07:00"
+    },
+    {
+      "file": "study-session-note.md",
+      "size_bytes": 1609,
+      "modified_at": "2026-06-13T15:26:35.310570-07:00",
+      "created_at": "2026-06-13T15:26:35.310504-07:00"
+    },
+    {
+      "file": "tests/adapters.py",
+      "size_bytes": 26354,
+      "modified_at": "2026-09-13T17:02:36.570861-07:00",
+      "created_at": "2026-05-30T07:57:44.598534-07:00"
+    }
+  ]
+}
