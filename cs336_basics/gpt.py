@@ -37,7 +37,9 @@ class Embedding(torch.nn.Module):
         return self.weight[token_ids]
 
 class RMSNorm(torch.nn.Module):
-    def __init__(self,d_model: int, eps: float , device=None, dtype=None):
+    def __init__(self,d_model: int, eps: float = 1e-5 , device=None, dtype=None):
+        '''
+        '''
         super().__init__()
         g = torch.ones(d_model, device=device, dtype=dtype) # 64
         self.weight = torch.nn.Parameter(g)
@@ -70,8 +72,103 @@ class SwiGLU_FFN(torch.nn.Module):
        
         return x 
     
-# d_model,d_ff = 64, 64
-# swiglu = SwiGLU_FFN(d_model,d_ff)
-# weights = swiglu.w1.weight.data
+class RotaryPositionalEmbedding(torch.nn.Module):
+    def __init__(self,theta:float,d_k: int, max_seq_len: int, device=None):
+        super().__init__()
+        """
+        theta: float constant value
+        d_k: int dim of query and key vectors
+        max_seq_len: int max seqn length of the input
+        device: torch.device device to store buffer on
+        """
+        self.angles = torch.tensor([[i/pow(theta,((2*k-2)/d_k)) for k in range(1,int(d_k/2)+1)] for i in range(max_seq_len)], device = device)
+        # (max_seq_len, d_k/2)
+        sines = torch.sin(self.angles)
+        cosines =torch.cos(self.angles)
+        self.register_buffer('sines', sines, persistent=False)
+        self.register_buffer('cosines', cosines, persistent=False)
+    def forward(self,x,token_positions):
+        """
+        x can have arbitary batch dims 
+        tok positions are tensor (...,seq_len)
+        use the token positions to slice your (possibly precomputed) cos and sin tensors along
+        the sequence dimension.
+        """
+        rotated_even = (x[..., 0::2] * self.cosines[token_positions]) - (x[..., 1::2] * self.sines[token_positions])
+        rotated_odd = (x[..., 0::2] * self.sines[token_positions]) + (x[..., 1::2] * self.cosines[token_positions])
+        output = torch.empty_like(x)
+        output[..., 0::2] = rotated_even 
+        output[..., 1::2] = rotated_odd
+        return output
 
-# print(weights)
+def softmax(in_features,dim):
+    values, indices = torch.max(in_features, dim=dim, keepdim=True)
+    x = in_features - values
+    return torch.exp(x)/torch.exp(x).sum((dim,),keepdim = True)
+
+def scaled_dot_product_attention(q, k, v, mask=None):
+        attention = ((q @ k.transpose(-2,-1))/sqrt(int(q.size(-1)))) 
+        if mask is not None:
+            attention = attention.masked_fill(~mask,float('-inf'))
+        return softmax(attention,-1) @ v
+           
+class Multihead_self_attention(torch.nn.Module):
+    '''
+    d__model: int Dimensionality of the Transformer block inputs.
+    num_heads: int Number of heads to use in multi-head self-attention.
+    try combining the key, query, and value projections into a single weight matrix so you only need a
+    single matrix multiply.
+    need to apply RoPE
+    '''
+    def __init__(self,d_model, num_heads):
+        super().__init__()
+        self.W_Q = Linear(d_model,d_model) 
+        self.W_K = Linear(d_model,d_model)
+        self.W_V = Linear(d_model,d_model)
+        self.W_O = Linear(d_model,d_model)
+
+    def forward(self,x,num_heads,d_model, rope=None, token_positions=None):
+        '''
+        x,num_heads,d_model, rope=None, token_positions=None
+        '''
+        B,T,C = x.shape
+        mask = torch.tril(torch.ones((T,T),dtype=torch.bool))
+        head_size = d_model // num_heads
+
+        if rope is not None:
+            q = rope(self.W_Q(x).view(B,T,num_heads, head_size).transpose(1,2),token_positions)
+            k = rope(self.W_K(x).view(B,T,num_heads, head_size).transpose(1,2),token_positions)
+        else:
+            q = self.W_Q(x).view(B,T,num_heads, head_size).transpose(1,2)
+            k = self.W_K(x).view(B,T,num_heads, head_size).transpose(1,2)
+
+        v = self.W_V(x).view(B,T,num_heads, head_size).transpose(1,2)
+        return self.W_O((scaled_dot_product_attention(q,k,v,mask).transpose(1,2)).reshape(B,T,num_heads*head_size)) # B,num_heads,T,head_size  -> B,T,num_heads*head_size
+
+class transformer_block(torch.nn.Module):
+    def __init__(self,d_model,num_heads,d_ff):
+        '''
+        d_model: int Dimensionality of the Transformer block inputs.
+        num_heads: int Number of heads to use in multi-head self-attention.
+        d_ff: int Dimensionality of the position-wise feed-forward inner layer.
+
+       2 sub-layers, 1: multihead self attention, 2 SwiGLU feed-forward network. 
+       in every layer, RMSNorm -> (MHA/FF)-> residual connection.
+        y = x + MultiHeadSelfAttention(RMSNorm(x))).
+        '''
+        super().__init__()
+        self.rms1 = RMSNorm(d_model)
+        self.rms2 = RMSNorm(d_model)
+        self.mha = Multihead_self_attention(d_model,num_heads)
+        self.ff = SwiGLU_FFN(d_model,d_ff)
+
+    def forward(self,in_features,num_heads,d_model,rope):
+        token_positions = torch.arange(start=0, end=in_features.size(-2), step=1, dtype=torch.long, device=in_features.device)
+        x = self.mha(self.rms1(in_features),num_heads,d_model,rope,token_positions)
+        x = x + in_features
+        x = self.ff(self.rms2(x)) + x
+        return x 
+        
+
+        
+
