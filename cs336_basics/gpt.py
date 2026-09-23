@@ -1,14 +1,19 @@
 import torch
 from math import sqrt
- 
+
+
 # basic building blocks
 class Linear(torch.nn.Module):
     '''
-    y = x @ W.t
-    x # 1 x,d
-    w.t # d,c
-    d = in_features
-    c = out_features
+    x (B,T,C) : x can have any number of dims
+
+    W(out_features, in_features) always 2D
+    
+    (C must be = in_features)
+    
+    x = x @ W.T  # B,T,C @ in_features, out_features = B,T,out_features
+
+    weights initialized with: 𝒩︀(𝜇 = 0, 𝜎2 = 2/𝑑in+𝑑out) truncated at [−3𝜎, 3𝜎].
     '''
     def __init__(self, in_features, out_features, device=None, dtype=None):
         super().__init__() 
@@ -18,12 +23,12 @@ class Linear(torch.nn.Module):
         self.weight = torch.nn.Parameter(w_tensor)
 
     def forward(self, x:torch.Tensor):
-        y = x @ self.weight.T
-        return y
-
+        return x @ self.weight.T
+        
 class Embedding(torch.nn.Module):
     '''
-    Creates an embedding look-up table 
+    creates an embedding look-up table
+    weights initialized with : 𝒩︀(𝜇 = 0, 𝜎2 = 1) truncated at [−3𝜎, 3𝜎].
     '''
     def __init__(self, num_embeddings, embedding_dim, device=None, dtype=None):
         super().__init__()
@@ -31,7 +36,6 @@ class Embedding(torch.nn.Module):
         sd = 1
         torch.nn.init.trunc_normal_(emb_tensor,0,sd,-3*sd,3*sd)
         self.weight = torch.nn.Parameter(emb_tensor)
-        #store the emb_table with d_model being the final dim
 
     def forward(self, token_ids: torch.Tensor):
         return self.weight[token_ids]
@@ -39,6 +43,7 @@ class Embedding(torch.nn.Module):
 class RMSNorm(torch.nn.Module):
     def __init__(self,d_model: int, eps: float = 1e-5 , device=None, dtype=None):
         '''
+
         '''
         super().__init__()
         g = torch.ones(d_model, device=device, dtype=dtype) # 64
@@ -54,26 +59,33 @@ class RMSNorm(torch.nn.Module):
         return x.to(in_dtype) 
      
 class SwiGLU_FFN(torch.nn.Module):
+    '''
+    d_ff = 8/3 * d_model = 4 * 2/3
+    2/3 for scaling down for GLU variants 
+    
+    '''
     def __init__(self,d_model: int ,d_ff, device=None, dtype=None):
+        '''
+        Simple FFN:
+        x → Linear → ReLU → Linear → output
+
+        SwiGLU FFN:
+        x → W₁ → SiLU ──┐
+                        × → W₂ → output
+        x → W₃ ─────────┘
+        '''
         super().__init__()
-        # d_ff = 8/3 * d_model
-        # d_ff = ((d_ff + 63) // 64) * 64
         self.w1 = Linear(d_model,d_ff, device, dtype)
         self.w2 = Linear(d_ff,d_model, device, dtype)
-        self.w3 = Linear(d_model,d_ff, device, dtype)
-        # self.weights = torch.nn.ParameterList(
-        #     [torch.nn.Parameter(w.weight) for w in [self.w1,self.w2,self.w3]])
-        self.SiLU = lambda x: x * torch.sigmoid(x)
-
+        self.w3 = Linear(d_model,d_ff, device, dtype) # gating mechanism
+        self.SiLU = lambda x: x * torch.sigmoid(x)        
         
     def forward(self, in_features: torch.Tensor):
-        x = in_features
-        x = self.w2(self.SiLU(self.w1(x)) * self.w3(x))
-       
-        return x 
+        # serial computation, can be parallelized.
+        return self.w2(self.SiLU(self.w1(in_features)) * self.w3(in_features))
     
 class RotaryPositionalEmbedding(torch.nn.Module):
-    def __init__(self,theta:float,d_k: int, max_seq_len: int, device=None):
+    def __init__(self,d_k: int, max_seq_len: int,theta : float = 10000.0, device=None):
         super().__init__()
         """
         theta: float constant value
@@ -82,7 +94,6 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         device: torch.device device to store buffer on
         """
         self.angles = torch.tensor([[i/pow(theta,((2*k-2)/d_k)) for k in range(1,int(d_k/2)+1)] for i in range(max_seq_len)], device = device)
-        # (max_seq_len, d_k/2)
         sines = torch.sin(self.angles)
         cosines =torch.cos(self.angles)
         self.register_buffer('sines', sines, persistent=False)
@@ -121,6 +132,7 @@ class Multihead_self_attention(torch.nn.Module):
     need to apply RoPE
     '''
     def __init__(self,d_model, num_heads):
+        # remove num_heads
         super().__init__()
         self.W_Q = Linear(d_model,d_model) 
         self.W_K = Linear(d_model,d_model)
@@ -167,8 +179,141 @@ class transformer_block(torch.nn.Module):
         x = self.mha(self.rms1(in_features),num_heads,d_model,rope,token_positions)
         x = x + in_features
         x = self.ff(self.rms2(x)) + x
-        return x 
-        
+        return x   
 
+class transformer_lm(torch.nn.Module):
+
+    def __init__(self, vocab_size, context_length, num_layers, d_model, num_heads, d_ff, rope_theta):
+        '''
+        vocab_size: int The size of the vocabulary, necessary for determining the dimensionality of the
+        token embedding matrix.
+        context_length: int The maximum context length, necessary for determining the dimensionality
+        of the RoPE sin and cos buffer.
+        num_layers: int The number of Transformer blocks to use.
+
+        vocab_size: int,
+            context_length: int,
+            d_model: int,
+            num_layers: int,
+            num_heads: int,
+            d_ff: int,
+            rope_theta: float,
+            weights: dict[str, Tensor],
+            in_indices: 
         
+        '''
+        super().__init__()
+
+        self.tok_embd = Embedding(vocab_size,embedding_dim= d_model)
+        
+        self.rope = RotaryPositionalEmbedding(rope_theta,d_model // num_heads, context_length)
+
+        self.blocks = torch.nn.ModuleList()
+        for _ in range(num_layers):
+            self.blocks.append(transformer_block(d_model,num_heads,d_ff))
+        self.norm = RMSNorm(d_model)
+        self.output_layer = Linear(d_model,vocab_size)  #lm head lauyer 
+ 
+
+    def forward(self,in_indices,num_heads,d_model):
+        
+        x = self.tok_embd(in_indices)  #B,seq_len -> B, seq_len, d_model
+        for block in self.blocks:
+            x = (block(x,num_heads,d_model,self.rope))
+        x = self.output_layer(self.norm(x))
+        # shouldnt we be using the embedding table for the output layer?
+        return x
+
+
+'''
+Total_Flops_forward = Batch_size * (num_layes * transformer_block_flops + LM_head_flops)
+
+LM_head_flops = output_layer_flops = 2*seq_len*
+
+transformer_block_flops:
+1.MHA: q,k,v projections + attention computation + output_projection
+    = (3 * (2(Seq_len)(d_m)^2) +( 2* 2(seq_len)^2*(head_size) )+ 2(seq_len)(d_m)^2
+
+2.swiglu_ffn: 2* 2(seq_len)(d_m)(d_ff) + 2(seq_len)(d_ff)(d_m)
+
+'''
+
+# vocab_size = 50257
+# context_length = 1024
+# num_layers = 48
+# d_model= 1,600
+# num_heads= 25
+# B = 1
+# head_size = d_model // num_heads
+# T = context_length
+# d_ff = 4288 # spl hyperpapram to to balance the d_model 8/3 * d_model 
+# rope_theta = 10000.0
+
+# def flops():
+#     # Per sequence, per transformer block
+#     qkv_flops = 3 * (2 * T * d_model**2)
+#     attention_flops = num_heads * (2 * 2 * T**2 * head_size)
+#     output_projection_flops = 2 * T * d_model**2
+
+#     mha_flops = qkv_flops + attention_flops + output_projection_flops
+#     swiglu_ffn_flops = 3 * (2 * T * d_model * d_ff)
+
+#     transformer_block_flops = mha_flops + swiglu_ffn_flops
+#     lm_head_flops = 2 * T * d_model * vocab_size
+
+#     # Total dense matrix-multiplication FLOPs for the batch
+#     return  B * (num_layers * transformer_block_flops + lm_head_flops) # 3516769894400
+
+model = transformer_lm(
+    vocab_size=50257,
+    context_length=1024,
+    num_layers=48,
+    d_model=1600,
+    num_heads=25,
+    d_ff=4288,
+    rope_theta=10000.0,
+)
+
+total_trainable_params = sum(
+    p.numel() for p in model.parameters() if p.requires_grad
+)
+
+# print(total_trainable_params) #1640452800
+# so 1640452800 f32 floating points take-up 1640452800 * 4 bytes
+# which approx 6.5 GB
+
+'''
+total_flops_forward = B * (
+    num_layers * transformer_block_flops + lm_head_flops
+)
+num_layers = 12
+d_model = 768
+num_heads = 12
+print(f"gpt2-small: {total_flops_forward}") # gpt2-small: 1840726016000
+
+
+total_flops_forward = B * (
+    num_layers * transformer_block_flops + lm_head_flops
+)
+num_layers = 24
+d_model = 1024
+num_heads = 16
+total_flops_forward
+print(f"gpt2-mid: {total_flops_forward}") # gpt2-mid: 1002704076800
+
+total_flops_forward = B * (
+    num_layers * transformer_block_flops + lm_head_flops
+)
+num_layers = 36
+d_model = 1280
+num_heads = 20
+total_flops_forward
+print(f"gpt2-large: {total_flops_forward}") # gpt2-large: 1840726016000
+
+
+e:
+
+16384/1024 # 16x more content lenght
+133577729638400/3516769894400 # = 38
+'''
 
