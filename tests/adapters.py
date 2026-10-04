@@ -36,8 +36,6 @@ def run_linear(
     return linear(in_features)
 
     
-
-
 def run_embedding(
     vocab_size: int,
     d_model: int,
@@ -325,8 +323,6 @@ def run_transformer_block(
     return block(in_features,num_heads,d_model,rope)
 
 
-
-
 def run_transformer_lm(
     vocab_size: int,
     context_length: int,
@@ -406,8 +402,44 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    # lm = transformer_lm(vocab_size,context_length,num_layers,d_model,num_heads,d_ff,rope_theta)
+    # lm.tok_embd.weight.data = weights["token_embeddings.weight"]
+    # lm.blocks[{num_layers}].mha.W_Q.weight
+    # return lm(in_indices,num_heads,d_model)
 
+    lm = transformer_lm(
+    vocab_size, context_length, num_layers,
+    d_model, num_heads, d_ff, rope_theta,
+    )
+
+    mapped_weights = {
+        "tok_embd.weight": weights["token_embeddings.weight"],
+        "norm.weight": weights["ln_final.weight"],
+        "output_layer.weight": weights["lm_head.weight"],
+    }
+
+    for i in range(num_layers):
+        source = f"layers.{i}"
+        target = f"blocks.{i}"
+
+        for local_name, reference_name in [
+            ("mha.W_Q", "attn.q_proj"),
+            ("mha.W_K", "attn.k_proj"),
+            ("mha.W_V", "attn.v_proj"),
+            ("mha.W_O", "attn.output_proj"),
+            ("rms1", "ln1"),
+            ("rms2", "ln2"),
+            ("ff.w1", "ffn.w1"),
+            ("ff.w2", "ffn.w2"),
+            ("ff.w3", "ffn.w3"),
+        ]:
+            mapped_weights[f"{target}.{local_name}.weight"] = (
+                weights[f"{source}.{reference_name}.weight"]
+            )
+
+    lm.load_state_dict(mapped_weights)
+    return lm(in_indices, num_heads, d_model)
+    
 
 def run_rmsnorm(
     d_model: int,
@@ -437,8 +469,7 @@ def run_rmsnorm(
     rms_norm.load_state_dict(state_dict)
 
     return rms_norm(in_features)
-
-    
+   
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     """Given a tensor of inputs, return the output of applying SiLU
@@ -508,7 +539,7 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    return cross_entropy(inputs,targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -520,14 +551,14 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    return gradient_clipping(parameters,max_l2_norm)
 
 
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return adamw
 
 
 def run_get_lr_cosine_schedule(
@@ -555,7 +586,7 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return learning_rate_schedule(it,max_learning_rate,min_learning_rate,warmup_iters,cosine_cycle_iters)
 
 
 def run_save_checkpoint(
@@ -651,6 +682,6 @@ def run_train_bpe(
     raise NotImplementedError
 
 
-# in_features, out_features = 4,5
 
+# in_features, out_features = 4,5
 # run_linear = 

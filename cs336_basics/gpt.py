@@ -1,6 +1,6 @@
 import torch
 from math import sqrt
-
+import math
 
 # basic building blocks
 class Linear(torch.nn.Module):
@@ -26,7 +26,9 @@ class Linear(torch.nn.Module):
         return x @ self.weight.T
         
 class Embedding(torch.nn.Module):
+
     '''
+    vocab_size,embedding_dim= d_model
     creates an embedding look-up table
     weights initialized with : 𝒩︀(𝜇 = 0, 𝜎2 = 1) truncated at [−3𝜎, 3𝜎].
     '''
@@ -43,7 +45,7 @@ class Embedding(torch.nn.Module):
 class RMSNorm(torch.nn.Module):
     def __init__(self,d_model: int, eps: float = 1e-5 , device=None, dtype=None):
         '''
-
+        input = output = (batch_size, sequence_length, d_model)
         '''
         super().__init__()
         g = torch.ones(d_model, device=device, dtype=dtype) # 64
@@ -73,6 +75,7 @@ class SwiGLU_FFN(torch.nn.Module):
         x → W₁ → SiLU ──┐
                         × → W₂ → output
         x → W₃ ─────────┘
+        input = output ...,d_model
         '''
         super().__init__()
         self.w1 = Linear(d_model,d_ff, device, dtype)
@@ -104,6 +107,7 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         tok positions are tensor (...,seq_len)
         use the token positions to slice your (possibly precomputed) cos and sin tensors along
         the sequence dimension.
+        input and output  = (..., seq_len, d_k)
         """
         rotated_even = (x[..., 0::2] * self.cosines[token_positions]) - (x[..., 1::2] * self.sines[token_positions])
         rotated_odd = (x[..., 0::2] * self.sines[token_positions]) + (x[..., 1::2] * self.cosines[token_positions])
@@ -113,12 +117,38 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         return output
 
 def softmax(in_features,dim):
-    values, indices = torch.max(in_features, dim=dim, keepdim=True)
-    x = in_features - values
-    return torch.exp(x)/torch.exp(x).sum((dim,),keepdim = True)
+    '''
+   softmax(x)i = exp(xi)/(∑n,j=1 exp(xj))
 
+   Args:
+           in_features (Float[Tensor, "..."]): Input features to softmax. Shape is arbitrary.
+           dim (int): Dimension of the `in_features` to apply softmax to.
+   
+       Returns:
+           Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
+           softmax normalizing the specified `dim`.
+    '''
+    values, indices = torch.max(in_features, dim=dim, keepdim=True,out=None)
+    
+    x = in_features - values
+    counts = torch.exp(x)
+    probs = counts / counts.sum((dim,),keepdim=True)
+    # x = /torch.exp(x).sum((dim,),keepdim = True)
+    return probs
+
+def cross_entropy(inputs, targets):
+
+    # subtracting the max values
+    shifted = inputs - inputs.max(dim = -1)
+    log_sum_exp = shifted.exp().sum(dim=-1).log()
+    target_logits = shifted.gather(
+        dim=-1, index=targets.unsqueeze(-1)
+    ).squeeze(-1)
+
+    return (log_sum_exp - target_logits).mean()
+    
 def scaled_dot_product_attention(q, k, v, mask=None):
-        attention = ((q @ k.transpose(-2,-1))/sqrt(int(q.size(-1)))) 
+        attention = ((q @ k.transpose(-2,-1))/sqrt(int(q.size(-1)))) # (B,num_heads,T, head_size) @ (B,num_heads,head_size,T) = (B,num_heads,T,T),, @ v (B,num_heads,T, head_size) = (B,num_heads,T, head_size)
         if mask is not None:
             attention = attention.masked_fill(~mask,float('-inf'))
         return softmax(attention,-1) @ v
@@ -155,7 +185,7 @@ class Multihead_self_attention(torch.nn.Module):
             k = self.W_K(x).view(B,T,num_heads, head_size).transpose(1,2)
 
         v = self.W_V(x).view(B,T,num_heads, head_size).transpose(1,2)
-        return self.W_O((scaled_dot_product_attention(q,k,v,mask).transpose(1,2)).reshape(B,T,num_heads*head_size)) # B,num_heads,T,head_size  -> B,T,num_heads*head_size
+        return self.W_O((scaled_dot_product_attention(q,k,v,mask).transpose(1,2)).reshape(B,T,num_heads*head_size)) # B,num_heads,T,head_size  -> B,T,num_heads*head_size = B,T,d
 
 class transformer_block(torch.nn.Module):
     def __init__(self,d_model,num_heads,d_ff):
@@ -212,7 +242,7 @@ class transformer_lm(torch.nn.Module):
         for _ in range(num_layers):
             self.blocks.append(transformer_block(d_model,num_heads,d_ff))
         self.norm = RMSNorm(d_model)
-        self.output_layer = Linear(d_model,vocab_size)  #lm head lauyer 
+        self.output_layer = Linear(d_model,vocab_size)  #lm head layer 
  
 
     def forward(self,in_indices,num_heads,d_model):
@@ -223,7 +253,24 @@ class transformer_lm(torch.nn.Module):
         x = self.output_layer(self.norm(x))
         # shouldnt we be using the embedding table for the output layer?
         return x
+    
+    def flops(vocab_size,context_length,num_layers,d_model,num_heads,d_ff,rope_theta,B):
+        T =context_length
+        head_size = d_model // num_heads
 
+        # Per sequence, per transformer block
+        qkv_flops = 3 * (2 * T * d_model**2)
+        attention_flops = num_heads * (2 * 2 * T**2 * head_size)
+        output_projection_flops = 2 * T * d_model**2
+
+        mha_flops = qkv_flops + attention_flops + output_projection_flops
+        swiglu_ffn_flops = 3 * (2 * T * d_model * d_ff)
+
+        transformer_block_flops = mha_flops + swiglu_ffn_flops
+        lm_head_flops = 2 * T * d_model * vocab_size
+
+        # Total dense matrix-multiplication FLOPs for the batch
+        B * (num_layers * transformer_block_flops + lm_head_flops) # 3516769894400
 
 '''
 Total_Flops_forward = Batch_size * (num_layes * transformer_block_flops + LM_head_flops)
@@ -238,32 +285,6 @@ transformer_block_flops:
 
 '''
 
-# vocab_size = 50257
-# context_length = 1024
-# num_layers = 48
-# d_model= 1,600
-# num_heads= 25
-# B = 1
-# head_size = d_model // num_heads
-# T = context_length
-# d_ff = 4288 # spl hyperpapram to to balance the d_model 8/3 * d_model 
-# rope_theta = 10000.0
-
-# def flops():
-#     # Per sequence, per transformer block
-#     qkv_flops = 3 * (2 * T * d_model**2)
-#     attention_flops = num_heads * (2 * 2 * T**2 * head_size)
-#     output_projection_flops = 2 * T * d_model**2
-
-#     mha_flops = qkv_flops + attention_flops + output_projection_flops
-#     swiglu_ffn_flops = 3 * (2 * T * d_model * d_ff)
-
-#     transformer_block_flops = mha_flops + swiglu_ffn_flops
-#     lm_head_flops = 2 * T * d_model * vocab_size
-
-#     # Total dense matrix-multiplication FLOPs for the batch
-#     return  B * (num_layers * transformer_block_flops + lm_head_flops) # 3516769894400
-
 model = transformer_lm(
     vocab_size=50257,
     context_length=1024,
@@ -274,9 +295,8 @@ model = transformer_lm(
     rope_theta=10000.0,
 )
 
-total_trainable_params = sum(
-    p.numel() for p in model.parameters() if p.requires_grad
-)
+total_trainable_params = sum( p.numel() for p in model.parameters() if p.requires_grad)
+params =  sum(p.numel() for p in model.parameters()) 
 
 # print(total_trainable_params) #1640452800
 # so 1640452800 f32 floating points take-up 1640452800 * 4 bytes
@@ -311,9 +331,133 @@ total_flops_forward
 print(f"gpt2-large: {total_flops_forward}") # gpt2-large: 1840726016000
 
 
-e:
+(e)
 
 16384/1024 # 16x more content lenght
 133577729638400/3516769894400 # = 38
 '''
+
+
+#Optimizers
+from collections.abc import Callable, Iterable
+from typing import Optional
+
+class SGD(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3):
+        '''
+        Slight variation of SGD where the lr decays over training, so we take succesively smaller steps over time.
+        params: learnable params, like weights in linear layers, they might come in groups, each with different hyperparams. 
+                if they come as single collections, the base contructor will assign them a default hyperparam like:
+        lr = 1e-3
+        '''
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {"lr": lr}
+        super().__init__(params, defaults)
+
+    def step(self, closure: Optional[Callable] = None):
+        '''
+        we iterate over each param in each group to apply the SGD: θ_{t+1} = θ_t - (α / √(t + 1)) ∇L(θ_t; B_t)
+
+        iteration number is kept as a state.
+
+        The torch.optim.Optimizer API specifies that the user might pass in a callable closure to re-compute the loss before the
+        optimizer step. We dont use it by we are passing it so as to comply with the API
+        '''
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"] # Get the learning rate.
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p] # Get state associated with p.
+                t = state.get("t", 0) # Get iteration number from the state, or 0.
+                grad = p.grad.data # Get the gradient of loss with respect to p.
+                p.data -= lr / math.sqrt(t + 1) * grad # Update weight tensor in-place.
+                state["t"] = t + 1 # Increment iteration number.
+
+        return loss
+
+class adamw(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
+        '''
+        AdamW adds 2 moment vectors m and v as additional optimizers states, which allows for more sophisticared optimization.
+        hyperparameter like betas 1 and 2 are used for calulating moment estimates.
+        
+        AdamW improves Adam regularization by adding weight decay (at each iteration, we pull the parameters
+        towards 0), in a way that is decoupled from the gradient update.
+        '''
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {"lr": lr, "betas" : betas, "eps" : eps, "weight_decay" : weight_decay}
+        super().__init__(params, defaults) # add the above here with same shapes #m,v, theta, all same shape
+
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        
+        for group in self.param_groups:
+            lr = group["lr"] # Get the learning rate.
+            betas = group["betas"]
+            eps = group["eps"]
+            weight_decay = group["weight_decay"]
+
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                #Sample batch of data 𝐵𝑡, update          
+                state = self.state[p] # Get state associated with p. 
+
+                t = state.get("t", 1) # Get iteration number from the state, or 1.
+                if "m" in state:
+                    m = state["m"]
+                    v = state["v"]
+                else:
+                    m = torch.zeros_like(p)
+                    v = torch.zeros_like(p)
+                    
+
+                grad = p.grad.data # Get the gradient of loss with respect to p.
+
+                lr_t = lr * (math.sqrt(1- pow(betas[1],t)))/ (1-pow(betas[0],t)) 
+
+                p.data -= lr * weight_decay * p.data # apply weight decay rate  # 2N flops
+
+                m = betas[0]*m + ((1-betas[0]) * grad) # 3 N flops
+
+                v = betas[1]*v + ((1-betas[1]) * pow(grad,2))
+
+                p.data -= lr_t * m/(v.sqrt() + eps)
+
+                state["m"] = m   
+                state["v"] = v           
+                state["t"] = t + 1 # Increment iteration number.
+
+        return loss
+
+# training loop
+weights = model.parameters()
+# opt = SGD([weights], lr=1e3) #1e1
+
+# for t in range(10):
+#     opt.zero_grad() # Reset the gradients for all learnable parameters.
+#     loss = (weights**2).mean() # Compute a scalar loss value.
+#     print(loss.cpu().item())
+#     loss.backward() # Run backward pass, which computes gradients.
+#     opt.step() # Run optimizer step.
+
+def learning_rate_schedule(t, lr_max, lr_min, t_w, t_c):
+    return t * lr_max / t_w if t < t_w else lr_min if t > t_c else lr_min + 0.5 * (1 + math.cos(math.pi * (t - t_w) / (t_c - t_w))) * (lr_max - lr_min)
+
+def gradient_clipping(params :list[torch.nn.Parameter],max_l2_norm:float):
+    
+    g_l2_norm = math.sqrt(sum([p.grad.square().sum() for p in params if p.grad is not None]))
+    factor = max_l2_norm/(g_l2_norm + 1e-6)
+    
+    if g_l2_norm >= max_l2_norm:
+         for p in params:
+             if p.grad is not None:
+                 p.grad = p.grad*factor  
+    return params   
+
 
