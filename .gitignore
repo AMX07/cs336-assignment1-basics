@@ -121,6 +121,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.sample
 .venv
 env/
 venv/
@@ -167,6 +170,8 @@ cython_debug/
 /data/
 /wandb/
 /checkpoints/
+/Checkpoints/
 /runs/
 # Empty scratch notebook; kept locally
 /cs336_basics/bpe.ipynb
+out/

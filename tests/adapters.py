@@ -1,5 +1,6 @@
 from __future__ import annotations
 from cs336_basics.gpt import *
+from cs336_basics.pretrain import *
 import os
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
@@ -505,7 +506,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return data_loader(dataset,batch_size,context_length,device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -605,7 +606,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    save_checkpoint(model,optimizer,iteration,out)
 
 
 def run_load_checkpoint(
@@ -626,7 +627,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src,model,optimizer)
 
 
 def get_tokenizer(
@@ -649,7 +650,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    from cs336_basics.tokenizer import Tokenizer
+
+    return Tokenizer(vocab, merges, special_tokens)
 
 
 def run_train_bpe(
@@ -679,7 +682,9 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    from cs336_basics.tokenizer import train_bpe
+
+    return train_bpe(input_path, vocab_size, special_tokens, **kwargs)
 
 
 

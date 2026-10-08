@@ -2,6 +2,10 @@ import torch
 from math import sqrt
 import math
 
+# from torch.optim.lr_scheduler import CosineAnnealingLR
+import torch.optim.optimizer
+from tests.conftest import d_model, vocab_size
+
 # basic building blocks
 class Linear(torch.nn.Module):
     '''
@@ -54,6 +58,7 @@ class RMSNorm(torch.nn.Module):
         self.rms = lambda a, rmsa : (a*self.weight)/rmsa
            
     def forward(self,x: torch.Tensor):
+        
         in_dtype = x.dtype
         x = x.to(torch.float32) # for helping w/ overflowing or underflowing
         rmsa = self.rms_a(x) 
@@ -135,18 +140,7 @@ def softmax(in_features,dim):
     probs = counts / counts.sum((dim,),keepdim=True)
     # x = /torch.exp(x).sum((dim,),keepdim = True)
     return probs
-
-def cross_entropy(inputs, targets):
-
-    # subtracting the max values
-    shifted = inputs - inputs.max(dim = -1)
-    log_sum_exp = shifted.exp().sum(dim=-1).log()
-    target_logits = shifted.gather(
-        dim=-1, index=targets.unsqueeze(-1)
-    ).squeeze(-1)
-
-    return (log_sum_exp - target_logits).mean()
-    
+ 
 def scaled_dot_product_attention(q, k, v, mask=None):
         attention = ((q @ k.transpose(-2,-1))/sqrt(int(q.size(-1)))) # (B,num_heads,T, head_size) @ (B,num_heads,head_size,T) = (B,num_heads,T,T),, @ v (B,num_heads,T, head_size) = (B,num_heads,T, head_size)
         if mask is not None:
@@ -174,7 +168,7 @@ class Multihead_self_attention(torch.nn.Module):
         x,num_heads,d_model, rope=None, token_positions=None
         '''
         B,T,C = x.shape
-        mask = torch.tril(torch.ones((T,T),dtype=torch.bool))
+        mask = torch.tril(torch.ones((T,T),dtype=torch.bool,device=x.device))
         head_size = d_model // num_heads
 
         if rope is not None:
@@ -234,15 +228,16 @@ class transformer_lm(torch.nn.Module):
         '''
         super().__init__()
 
-        self.tok_embd = Embedding(vocab_size,embedding_dim= d_model)
+        self.tok_embd = Embedding(vocab_size,d_model)
         
-        self.rope = RotaryPositionalEmbedding(rope_theta,d_model // num_heads, context_length)
+        self.rope = RotaryPositionalEmbedding(d_model // num_heads, context_length, rope_theta)
 
         self.blocks = torch.nn.ModuleList()
         for _ in range(num_layers):
             self.blocks.append(transformer_block(d_model,num_heads,d_ff))
         self.norm = RMSNorm(d_model)
         self.output_layer = Linear(d_model,vocab_size)  #lm head layer 
+        # shouldnt we be using the embedding table for the output layer?
  
 
     def forward(self,in_indices,num_heads,d_model):
@@ -250,8 +245,7 @@ class transformer_lm(torch.nn.Module):
         x = self.tok_embd(in_indices)  #B,seq_len -> B, seq_len, d_model
         for block in self.blocks:
             x = (block(x,num_heads,d_model,self.rope))
-        x = self.output_layer(self.norm(x))
-        # shouldnt we be using the embedding table for the output layer?
+        x = self.output_layer(self.norm(x))    
         return x
     
     def flops(vocab_size,context_length,num_layers,d_model,num_heads,d_ff,rope_theta,B):
@@ -271,193 +265,3 @@ class transformer_lm(torch.nn.Module):
 
         # Total dense matrix-multiplication FLOPs for the batch
         B * (num_layers * transformer_block_flops + lm_head_flops) # 3516769894400
-
-'''
-Total_Flops_forward = Batch_size * (num_layes * transformer_block_flops + LM_head_flops)
-
-LM_head_flops = output_layer_flops = 2*seq_len*
-
-transformer_block_flops:
-1.MHA: q,k,v projections + attention computation + output_projection
-    = (3 * (2(Seq_len)(d_m)^2) +( 2* 2(seq_len)^2*(head_size) )+ 2(seq_len)(d_m)^2
-
-2.swiglu_ffn: 2* 2(seq_len)(d_m)(d_ff) + 2(seq_len)(d_ff)(d_m)
-
-'''
-
-model = transformer_lm(
-    vocab_size=50257,
-    context_length=1024,
-    num_layers=48,
-    d_model=1600,
-    num_heads=25,
-    d_ff=4288,
-    rope_theta=10000.0,
-)
-
-total_trainable_params = sum( p.numel() for p in model.parameters() if p.requires_grad)
-params =  sum(p.numel() for p in model.parameters()) 
-
-# print(total_trainable_params) #1640452800
-# so 1640452800 f32 floating points take-up 1640452800 * 4 bytes
-# which approx 6.5 GB
-
-'''
-total_flops_forward = B * (
-    num_layers * transformer_block_flops + lm_head_flops
-)
-num_layers = 12
-d_model = 768
-num_heads = 12
-print(f"gpt2-small: {total_flops_forward}") # gpt2-small: 1840726016000
-
-
-total_flops_forward = B * (
-    num_layers * transformer_block_flops + lm_head_flops
-)
-num_layers = 24
-d_model = 1024
-num_heads = 16
-total_flops_forward
-print(f"gpt2-mid: {total_flops_forward}") # gpt2-mid: 1002704076800
-
-total_flops_forward = B * (
-    num_layers * transformer_block_flops + lm_head_flops
-)
-num_layers = 36
-d_model = 1280
-num_heads = 20
-total_flops_forward
-print(f"gpt2-large: {total_flops_forward}") # gpt2-large: 1840726016000
-
-
-(e)
-
-16384/1024 # 16x more content lenght
-133577729638400/3516769894400 # = 38
-'''
-
-
-#Optimizers
-from collections.abc import Callable, Iterable
-from typing import Optional
-
-class SGD(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3):
-        '''
-        Slight variation of SGD where the lr decays over training, so we take succesively smaller steps over time.
-        params: learnable params, like weights in linear layers, they might come in groups, each with different hyperparams. 
-                if they come as single collections, the base contructor will assign them a default hyperparam like:
-        lr = 1e-3
-        '''
-        if lr < 0:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        defaults = {"lr": lr}
-        super().__init__(params, defaults)
-
-    def step(self, closure: Optional[Callable] = None):
-        '''
-        we iterate over each param in each group to apply the SGD: θ_{t+1} = θ_t - (α / √(t + 1)) ∇L(θ_t; B_t)
-
-        iteration number is kept as a state.
-
-        The torch.optim.Optimizer API specifies that the user might pass in a callable closure to re-compute the loss before the
-        optimizer step. We dont use it by we are passing it so as to comply with the API
-        '''
-        loss = None if closure is None else closure()
-        for group in self.param_groups:
-            lr = group["lr"] # Get the learning rate.
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                state = self.state[p] # Get state associated with p.
-                t = state.get("t", 0) # Get iteration number from the state, or 0.
-                grad = p.grad.data # Get the gradient of loss with respect to p.
-                p.data -= lr / math.sqrt(t + 1) * grad # Update weight tensor in-place.
-                state["t"] = t + 1 # Increment iteration number.
-
-        return loss
-
-class adamw(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
-        '''
-        AdamW adds 2 moment vectors m and v as additional optimizers states, which allows for more sophisticared optimization.
-        hyperparameter like betas 1 and 2 are used for calulating moment estimates.
-        
-        AdamW improves Adam regularization by adding weight decay (at each iteration, we pull the parameters
-        towards 0), in a way that is decoupled from the gradient update.
-        '''
-        if lr < 0:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        defaults = {"lr": lr, "betas" : betas, "eps" : eps, "weight_decay" : weight_decay}
-        super().__init__(params, defaults) # add the above here with same shapes #m,v, theta, all same shape
-
-    def step(self, closure: Optional[Callable] = None):
-        loss = None if closure is None else closure()
-        
-        for group in self.param_groups:
-            lr = group["lr"] # Get the learning rate.
-            betas = group["betas"]
-            eps = group["eps"]
-            weight_decay = group["weight_decay"]
-
-
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                #Sample batch of data 𝐵𝑡, update          
-                state = self.state[p] # Get state associated with p. 
-
-                t = state.get("t", 1) # Get iteration number from the state, or 1.
-                if "m" in state:
-                    m = state["m"]
-                    v = state["v"]
-                else:
-                    m = torch.zeros_like(p)
-                    v = torch.zeros_like(p)
-                    
-
-                grad = p.grad.data # Get the gradient of loss with respect to p.
-
-                lr_t = lr * (math.sqrt(1- pow(betas[1],t)))/ (1-pow(betas[0],t)) 
-
-                p.data -= lr * weight_decay * p.data # apply weight decay rate  # 2N flops
-
-                m = betas[0]*m + ((1-betas[0]) * grad) # 3 N flops
-
-                v = betas[1]*v + ((1-betas[1]) * pow(grad,2))
-
-                p.data -= lr_t * m/(v.sqrt() + eps)
-
-                state["m"] = m   
-                state["v"] = v           
-                state["t"] = t + 1 # Increment iteration number.
-
-        return loss
-
-# training loop
-weights = model.parameters()
-# opt = SGD([weights], lr=1e3) #1e1
-
-# for t in range(10):
-#     opt.zero_grad() # Reset the gradients for all learnable parameters.
-#     loss = (weights**2).mean() # Compute a scalar loss value.
-#     print(loss.cpu().item())
-#     loss.backward() # Run backward pass, which computes gradients.
-#     opt.step() # Run optimizer step.
-
-def learning_rate_schedule(t, lr_max, lr_min, t_w, t_c):
-    return t * lr_max / t_w if t < t_w else lr_min if t > t_c else lr_min + 0.5 * (1 + math.cos(math.pi * (t - t_w) / (t_c - t_w))) * (lr_max - lr_min)
-
-def gradient_clipping(params :list[torch.nn.Parameter],max_l2_norm:float):
-    
-    g_l2_norm = math.sqrt(sum([p.grad.square().sum() for p in params if p.grad is not None]))
-    factor = max_l2_norm/(g_l2_norm + 1e-6)
-    
-    if g_l2_norm >= max_l2_norm:
-         for p in params:
-             if p.grad is not None:
-                 p.grad = p.grad*factor  
-    return params   
-
-
