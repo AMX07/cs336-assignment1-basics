@@ -26,5 +26,7 @@
     "other": "on",
     "comments": "off",
     "strings": "off"
-  }
+  },
+  "jupyter.notebookFileRoot": "${workspaceFolder}",
+  "python.terminal.activateEnvironment": true
 }

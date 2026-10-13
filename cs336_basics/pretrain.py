@@ -2,33 +2,19 @@
 import argparse
 import string
 import torch
+from torch.optim import AdamW
 from cs336_basics.gpt import *
 import numpy as np
 import os
 from dataclasses import dataclass, fields
+from cs336_basics.tokenizer import Tokenizer
 
+tok = Tokenizer.from_files(
+    "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_vocab.pkl",
+    "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_merges.pkl",
+    special_tokens=["<|endoftext|>"],
+)
 
-@dataclass
-class hyperparams:
-    batch_size: int = 32
-    vocab_size: int =50257
-    context_length: int =128
-    num_layers: int=2
-    d_model: int=64
-    num_heads: int =4
-    d_ff: int=4288
-    rope_theta: float=10000.0
-    dataset: str = "/Users/anshmittal/Documents/cs336/assignment1-basics/out/owt_train.npy"
-    val_dataset: str = "/Users/anshmittal/Documents/cs336/assignment1-basics/out/owt_valid.npy"
-    t: int = 2000
-    eval_every : int = 1000 #t%2
-    t_w: int = 5
-    lr_max:float = 1e-3
-    lr_min : float = 1e-4
-    t_c: int = 6
-    device : str = "mps"
-    save_every : int = t / 10
-    eval_batches : int = 10
 
 def cross_entropy(inputs, targets):
     # subtracting the max values
@@ -240,7 +226,7 @@ def load_checkpoint(src, model, optimizer):
 
     obj = torch.load(src) #{iteration,model.state_dict(), optimizer.state_dict()}
     # obj =  {"iteration":iteration,"model.state_dict()":model.state_dict(), "optimizer.state_dict()":optimizer.state_dict()}
-
+    
     iteration, model_state_dict, optim_state_dict = obj.values()
 
     # torch.nn.Module().load_state_dict(model_state_dict)
@@ -251,24 +237,48 @@ def load_checkpoint(src, model, optimizer):
 
     return iteration
 
+
+@dataclass
+class hyperparams:
+    batch_size: int = 640
+    vocab_size: int =10000
+    context_length: int =256
+    num_layers: int=4
+    d_model: int=512
+    num_heads: int =16
+    d_ff: int=1344
+    rope_theta: float=10000.0
+    dataset: str = "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_train.npy"
+    val_dataset: str = "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_valid.npy"
+    t: int = 10000
+    t_c: int = t-1
+    t_w: int = 0.05 * t
+    eval_every : int = 1 #t%2
+    lr_max:float = 0.035
+    lr_min : float = 1e-2
+    device : str = "mps"
+    save_every : int = t / 10
+    eval_batches : int = 10
+
+
 def main(cfg) :
     
     '''
     training loop
     '''
     model = transformer_lm(cfg.vocab_size,cfg.context_length,cfg.num_layers,cfg.d_model,cfg.num_heads,cfg.d_ff,cfg.rope_theta) #todo: redesign to prevent repeated arguments
+    # print(model)
+    model = torch.compile(model, backend="aot_eager")
     model.to(device=cfg.device)
-    
     dataset = np.load(cfg.dataset, mmap_mode="r")
-    # dataset = np.memmap(filename=cfg.dataset, dtype=np.uint16, mode="r")
-    # params = 
-    # lr = learning_rate_schedule(), need to know max itertions
     opt = adamw(model.parameters(), lr=cfg.lr_max)
     val_dataset = np.load(cfg.val_dataset, mmap_mode="r")
     losses = []
-                
+    train_losses = []
 
-    
+
+
+                    
     for t in range(cfg.t):
         lr = learning_rate_schedule(t, cfg.lr_max, cfg.lr_min, cfg.t_w, cfg.t_c)
 
@@ -284,45 +294,87 @@ def main(cfg) :
         # print(loss.cpu().item())
         loss.backward() # Run backward pass, which computes gradients.
         opt.step() # Run optimizer step
+        
         # what's the diff between lr used in adawm class and lr schedule we implemented, how to use which one?  
         
         
         ckpt_dir = f"checkpoints/{run.name}"
         os.makedirs(ckpt_dir, exist_ok=True)
 
+        train_losses.append(loss.item())  # every step
         if (t + 1) % cfg.save_every == 0:
-            losses.append(loss)
-            run.log({"loss": sum(losses) / len(losses)}, step=t + 1)
-            save_checkpoint(model, opt, t + 1, f"{ckpt_dir}/ckpt_{t + 1}.pt")
-
+            save_checkpoint(model, opt, cfg.t, f"{ckpt_dir}/ckpt_final.pt")
+            
         
         if (t + 1) % cfg.eval_every == 0:
+            run.log({"avg_loss": sum(train_losses) / len(train_losses)}, step=t + 1)
+            run.log({"loss": loss.item()}, step=t + 1)
+
+            run.log({"lr": lr}, step=t+1)
+            train_losses = []
             with torch.no_grad():
                 val_losses = []
                 for _ in range(cfg.eval_batches):
                     vx, vy = data_loader(val_dataset, cfg.batch_size, cfg.context_length, cfg.device)
                     val_losses.append(cross_entropy(model(vx, cfg.num_heads, cfg.d_model), vy).item())
             run.log({"val_loss": sum(val_losses) / len(val_losses)}, step=t + 1)
-                    
+            print(run)
 
-                    
-    
     save_checkpoint(model, opt, cfg.t, f"{ckpt_dir}/ckpt_final.pt")
     run.finish()
     
     # try to actually run the loop
 
+def top_p_filter(probs: torch.Tensor, p: float) -> torch.Tensor:
+    """Keep the smallest set of most likely tokens whose total probability ≥ p, then renormalize."""
+    sorted_probs, sorted_idx = torch.sort(probs, dim=-1, descending=True)
+    cumulative = torch.cumsum(sorted_probs, dim=-1)
+    # drop a token if the tokens ranked above it already reach p (the top token is always kept)
+    remove = cumulative - sorted_probs >= p
+    sorted_probs[remove] = 0.0
+    filtered = torch.zeros_like(probs).scatter(-1, sorted_idx, sorted_probs)
+    return filtered / filtered.sum(dim=-1, keepdim=True)
 
-def decoding(prompt):
+def decoding(cfg):
     """
     1. load the model checkpoints
     prompt = T,C
     """
     # forward transformer lm with batch size = 1
+    # model = transformer_lm(cfg)
 
-    model = transformer_lm(cfg)
+    model = transformer_lm(cfg.vocab_size,cfg.context_length,cfg.num_layers,cfg.d_model,cfg.num_heads,cfg.d_ff,cfg.rope_theta) 
 
+    model.to(device=cfg.device)
+    opt = adamw(model.parameters(), lr=cfg.lr_max)
+    src = "/Users/anshmittal/Documents/cs336/assignment1-basics/checkpoints/bumbling-brook-124/ckpt_final.pt"
+    itr = load_checkpoint(src,model,opt)
+    
+    dataset = np.load(cfg.dataset, mmap_mode="r")
 
+    x,y = data_loader(dataset, 1, cfg.context_length, cfg.device)# x,y = tok_embd(x), tok_embd(y) 
+
+    eot_id, max_new_tokens, temperature = 256, 200, 0.8
+    model.eval()
+    print("################")
+    print(tok.decode(x[0].tolist()))
+    print("################")
+    print("################")
+
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            logits = model(x[:, -cfg.context_length:], cfg.num_heads, cfg.d_model)[:, -1, :]  # (1, vocab)
+            logits[:, 32000:] = float("-inf")                 # IDs not in the OWT vocab
+            probs = softmax(logits / temperature, dim=-1)   # temperature first
+            probs = top_p_filter(probs, p=0.9)              # then top-p
+            idx = torch.multinomial(probs, 1)
+            x = torch.cat((x, idx), dim=1)                    # already (1, 1), no .view needed
+            # print()
+            print(tok.decode(idx[0].tolist()), end=" ")
+            if idx.item() == eot_id:
+                break
+    print("################")
+    print(tok.decode(x[0].tolist()))
 
 import random
 import wandb
@@ -342,8 +394,8 @@ if __name__ == "__main__":
         project="assignment1",
         config=hyperparams(**args),
     )
-    # main(hyperparams(**args))
-    decoding(hyperparams(**args))
+    main(hyperparams(**args))
+    # decoding(hyperparams(**args)) 
 
 
 
