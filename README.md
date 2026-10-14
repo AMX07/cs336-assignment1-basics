@@ -2,9 +2,11 @@
 
 My from-scratch implementation of Stanford CS336 Assignment 1, building and training a Transformer LM in PyTorch.
 
-![TinyStories LR sweep comparing validation loss across four learning-rate schedules](docs/images/lr-sweep.png)
+![TinyStories LR sweep comparing validation loss for peak learning rates 0.01, 0.02, and 0.03](docs/images/lr-sweep.png)
 
-The run targeting a peak learning rate of **0.035** reached **2.05 validation loss**; both runs targeting **0.1** improved initially, then became unstable during warmup. These early TinyStories experiments point toward a lower learning rate for the next run; experiments and the leaderboard run are in progress.
+Across three 2,000-step TinyStories runs, peak LR **0.01** achieved the lowest final validation loss: **1.378**, compared with **2.400** at 0.02 and **2.198** at 0.03. All three used 100 warmup steps followed by cosine decay to 10% of peak LR, with the same model, batch size, and context length.
+
+W&B runs: [warm-violet-159 · LR 0.01](https://forge.coreweave.com/wandb/alephnott/assignment1/runs/l5dba839), [splendid-wave-158 · LR 0.02](https://forge.coreweave.com/wandb/alephnott/assignment1/runs/tiuyf0cn), [misunderstood-thunder-157 · LR 0.03](https://forge.coreweave.com/wandb/alephnott/assignment1/runs/cwe96lt3).
 
 ## Current progress
 
