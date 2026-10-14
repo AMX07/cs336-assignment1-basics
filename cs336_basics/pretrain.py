@@ -8,17 +8,27 @@ import numpy as np
 import os
 from dataclasses import dataclass, fields
 from cs336_basics.tokenizer import Tokenizer
+from pathlib import Path
+
+# tok = Tokenizer.from_files(
+#     "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_vocab.pkl",
+#     "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_merges.pkl",
+#     special_tokens=["<|endoftext|>"],
+# )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 tok = Tokenizer.from_files(
-    "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_vocab.pkl",
-    "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_merges.pkl",
+    PROJECT_ROOT / "out" / "tinystories_vocab.pkl",
+    PROJECT_ROOT / "out" / "tinystories_merges.pkl",
     special_tokens=["<|endoftext|>"],
 )
 
 
+
 def cross_entropy(inputs, targets):
     # subtracting the max values
-    shifted = inputs - inputs[-1].max()
+    shifted = inputs - inputs.max(dim=-1, keepdim=True).values
     # torch.Tensor
     log_sum_exp = shifted.exp().sum(dim=-1).log()
     target_logits = shifted.gather(
@@ -156,12 +166,22 @@ def gradient_clipping(params :list[torch.nn.Parameter],max_l2_norm:float):
          for p in params:
              if p.grad is not None:
                  p.grad = p.grad*factor  
-    return params   
+    return g_l2_norm   
+
+# def gradient_clipping(params, max_l2_norm):
+#     g_l2_norm = math.sqrt(sum([p.grad.square().sum() for p in params if p.grad is not None]))
+#     if g_l2_norm >= max_l2_norm:
+#         factor = max_l2_norm / (g_l2_norm + 1e-6)
+#         for p in params:
+#             if p.grad is not None:
+#                 p.grad = p.grad * factor
+#     return g_l2_norm  # pre-clip norm, already a float
+
 
 import numpy.typing as npt
 
 def data_loader(
-    dataset: npt.NDArray, batch_size: int, context_length: int, device=torch.device('mps')
+    dataset: npt.NDArray, batch_size: int, context_length: int, device=torch.device('cuda')
 ) -> tuple[torch.Tensor, torch.Tensor]:
     
     """
@@ -240,7 +260,7 @@ def load_checkpoint(src, model, optimizer):
 
 @dataclass
 class hyperparams:
-    batch_size: int = 640
+    batch_size: int = 200
     vocab_size: int =10000
     context_length: int =256
     num_layers: int=4
@@ -248,17 +268,18 @@ class hyperparams:
     num_heads: int =16
     d_ff: int=1344
     rope_theta: float=10000.0
-    dataset: str = "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_train.npy"
-    val_dataset: str = "/Users/anshmittal/Documents/cs336/assignment1-basics/out/tinystories_valid.npy"
-    t: int = 10000
+    dataset: str = str(PROJECT_ROOT / "out" / "tinystories_train.npy")
+    val_dataset: str = str(PROJECT_ROOT / "out" / "tinystories_valid.npy")
+    t: int = 2000
     t_c: int = t-1
     t_w: int = 0.05 * t
-    eval_every : int = 1 #t%2
-    lr_max:float = 0.035
-    lr_min : float = 1e-2
-    device : str = "mps"
-    save_every : int = t / 10
+    eval_every : int = 50
+    lr_max:float = 0.009
+    lr_min : float = 0.001
+    device : str = "cuda"
+    save_every : int = t/10
     eval_batches : int = 10
+    clip_threshold: float = 1.0
 
 
 def main(cfg) :
@@ -267,16 +288,13 @@ def main(cfg) :
     training loop
     '''
     model = transformer_lm(cfg.vocab_size,cfg.context_length,cfg.num_layers,cfg.d_model,cfg.num_heads,cfg.d_ff,cfg.rope_theta) #todo: redesign to prevent repeated arguments
-    # print(model)
-    model = torch.compile(model, backend="aot_eager")
     model.to(device=cfg.device)
+    model = torch.compile(model, backend="inductor")
     dataset = np.load(cfg.dataset, mmap_mode="r")
     opt = adamw(model.parameters(), lr=cfg.lr_max)
     val_dataset = np.load(cfg.val_dataset, mmap_mode="r")
     losses = []
     train_losses = []
-
-
 
                     
     for t in range(cfg.t):
@@ -293,6 +311,7 @@ def main(cfg) :
         loss = cross_entropy(x,y) # Compute a scalar loss value.
         # print(loss.cpu().item())
         loss.backward() # Run backward pass, which computes gradients.
+        grad_norm = gradient_clipping(list(model.parameters()),max_l2_norm=cfg.clip_threshold,)
         opt.step() # Run optimizer step
         
         # what's the diff between lr used in adawm class and lr schedule we implemented, how to use which one?  
@@ -304,11 +323,14 @@ def main(cfg) :
         train_losses.append(loss.item())  # every step
         if (t + 1) % cfg.save_every == 0:
             save_checkpoint(model, opt, cfg.t, f"{ckpt_dir}/ckpt_final.pt")
+
+        if (t + 1) % 10 == 0:
+            run.log({"loss": loss.item(), "grad_norm": grad_norm, "lr": lr}, step=t + 1)
             
         
         if (t + 1) % cfg.eval_every == 0:
             run.log({"avg_loss": sum(train_losses) / len(train_losses)}, step=t + 1)
-            run.log({"loss": loss.item()}, step=t + 1)
+            # run.log({"loss": loss.item()}, step=t + 1)
 
             run.log({"lr": lr}, step=t+1)
             train_losses = []
@@ -347,7 +369,7 @@ def decoding(cfg):
 
     model.to(device=cfg.device)
     opt = adamw(model.parameters(), lr=cfg.lr_max)
-    src = "/Users/anshmittal/Documents/cs336/assignment1-basics/checkpoints/bumbling-brook-124/ckpt_final.pt"
+    src = PROJECT_ROOT / "checkpoints" / "bumbling-brook-124" / "ckpt_final.pt"
     itr = load_checkpoint(src,model,opt)
     
     dataset = np.load(cfg.dataset, mmap_mode="r")
