@@ -26,16 +26,6 @@ tok = Tokenizer.from_files(
 
 
 
-def cross_entropy(inputs, targets):
-    # subtracting the max values
-    shifted = inputs - inputs.max(dim=-1, keepdim=True).values
-    # torch.Tensor
-    log_sum_exp = shifted.exp().sum(dim=-1).log()
-    target_logits = shifted.gather(
-        dim=-1, index=targets.unsqueeze(-1)
-    ).squeeze(-1)
-
-    return (log_sum_exp - target_logits).mean()
 
 #Optimizers
 from collections.abc import Callable, Iterable
@@ -181,7 +171,7 @@ def gradient_clipping(params :list[torch.nn.Parameter],max_l2_norm:float):
 import numpy.typing as npt
 
 def data_loader(
-    dataset: npt.NDArray, batch_size: int, context_length: int, device=torch.device('cuda')
+    dataset: npt.NDArray, batch_size: int, context_length: int, device=torch.device('mps')
 ) -> tuple[torch.Tensor, torch.Tensor]:
     
     """
@@ -260,7 +250,7 @@ def load_checkpoint(src, model, optimizer):
 
 @dataclass
 class hyperparams:
-    batch_size: int = 200
+    batch_size: int = 200   
     vocab_size: int =10000
     context_length: int =256
     num_layers: int=4
@@ -276,7 +266,7 @@ class hyperparams:
     eval_every : int = 50
     lr_max:float = 0.009
     lr_min : float = 0.001
-    device : str = "cuda"
+    device : str = "mps"
     save_every : int = t/10
     eval_batches : int = 10
     clip_threshold: float = 1.0
@@ -289,7 +279,7 @@ def main(cfg) :
     '''
     model = transformer_lm(cfg.vocab_size,cfg.context_length,cfg.num_layers,cfg.d_model,cfg.num_heads,cfg.d_ff,cfg.rope_theta) #todo: redesign to prevent repeated arguments
     model.to(device=cfg.device)
-    model = torch.compile(model, backend="inductor")
+    model = torch.compile(model, backend="aot_eager")
     dataset = np.load(cfg.dataset, mmap_mode="r")
     opt = adamw(model.parameters(), lr=cfg.lr_max)
     val_dataset = np.load(cfg.val_dataset, mmap_mode="r")
@@ -418,6 +408,4 @@ if __name__ == "__main__":
     )
     main(hyperparams(**args))
     # decoding(hyperparams(**args)) 
-
-
 

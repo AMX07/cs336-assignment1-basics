@@ -133,9 +133,10 @@ def softmax(in_features,dim):
            Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
            softmax normalizing the specified `dim`.
     '''
+    # done for stablity 
     values, indices = torch.max(in_features, dim=dim, keepdim=True,out=None)
-    
     x = in_features - values
+
     counts = torch.exp(x)
     probs = counts / counts.sum((dim,),keepdim=True)
     # x = /torch.exp(x).sum((dim,),keepdim = True)
@@ -265,3 +266,17 @@ class transformer_lm(torch.nn.Module):
 
         # Total dense matrix-multiplication FLOPs for the batch
         B * (num_layers * transformer_block_flops + lm_head_flops) # 3516769894400
+
+
+# def cross_entropy(inputs, targets):
+#     values, indices = torch.max(inputs, dim=-1, keepdim=True)
+#     x = inputs - values
+#     counts = torch.exp(x)
+#     probs = counts / counts.sum((-1,),keepdim=True)
+#     return -probs[torch.arange(targets.shape[0]), targets].log().mean()
+
+def cross_entropy(inputs, targets):
+    m = inputs.max(dim=-1, keepdim=True).values                       # (B, T, 1), small
+    log_sum_exp = m.squeeze(-1) + (inputs - m).exp().sum(dim=-1).log() # shifted is a temporary
+    target_logits = inputs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+    return (log_sum_exp - target_logits).mean()
